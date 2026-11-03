@@ -2,7 +2,7 @@
 
 Private FastAPI service for NBA first-basket research: historical first
 scorers and starters imported from NBA.com, matchup probabilities from that
-history, and a prediction ledger graded against actual results. Version 1.1.0.
+history, and a prediction ledger graded against actual results. Version 1.2.0.
 
 The probabilities are a research baseline, not a trained or calibrated model.
 Do not treat their output as betting probabilities.
@@ -99,6 +99,7 @@ Without `NBA_API_KEY`, protected endpoints return 503.
 | POST   | `/predictions`                | yes  | Log a prediction before tip-off       |
 | GET    | `/predictions`                | yes  | List predictions with their grades    |
 | GET    | `/predictions/grades`         | yes  | Hit rate, log loss and Brier score per model |
+| GET    | `/predictions/compare`        | yes  | Head-to-head of two models on the games both predicted (`model_a`, `model_b`) |
 
 ### Matchup model
 
@@ -116,10 +117,22 @@ curl -X POST https://YOUR-SERVICE.onrender.com/first-basket/matchup \
        "tip_time":"2025-11-21T00:30:00Z"}'
 ```
 
-With `save_prediction`, the result is logged to the ledger. Grading uses one
+With `save_prediction`, the result is logged to the ledger. When `game_date`
+is given, only games before that date count toward each starter's history,
+so the baseline never sees the game it predicts. Grading uses one
 prediction per game and model (the latest one made before `tip_time`).
 Predictions logged after tip-off are excluded. Predictions without a
 `tip_time` are included and counted separately.
+
+A prediction can carry `home_team` and `away_team`. If its `game_id` has no
+imported result (for example a made-up id because NBA.com's schedule was
+unreachable), it is graded against the game with the same date and teams.
+`GET /predictions` takes `offset` to page through more than 500 predictions.
+
+`/predictions/compare` pairs each game's last pre-tip prediction from both
+models and reports each model's log loss, Brier and top-pick hit rate, the
+mean log-loss difference (A minus B, negative means A is better) with its
+paired standard error, and a verdict once 30 games are shared.
 
 Example:
 

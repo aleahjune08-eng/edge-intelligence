@@ -12,7 +12,7 @@ from sqlalchemy.exc import SQLAlchemyError
 import db
 import model
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 API_KEY = os.getenv("NBA_API_KEY", "")
 
 engine = None
@@ -23,6 +23,7 @@ async def lifespan(app: FastAPI):
     global engine
     engine = db.make_engine()
     db.metadata.create_all(engine)
+    db.add_missing_columns(engine)
     with engine.begin() as conn:
         db.seed_from_csv(conn)
     yield
@@ -316,10 +317,13 @@ class MatchupRequest(BaseModel):
         return self
 
 
-def latest_starters(conn, team):
+def latest_starters(conn, team, before=None):
     gs = db.game_starters
+    query = select(gs.c.game_id).where(gs.c.team == team)
+    if before:
+        query = query.where(gs.c.game_date < before)
     last_game = conn.execute(
-        select(gs.c.game_id).where(gs.c.team == team)
+        query
         .order_by(gs.c.game_date.desc(), gs.c.game_id.desc()).limit(1)
     ).scalar()
     if last_game is None:
@@ -329,9 +333,12 @@ def latest_starters(conn, team):
             gs.c.game_id == last_game, gs.c.team == team))]
 
 
-def player_history(conn, player_id, season):
+def player_history(conn, player_id, season, before=None):
     gs, fb = db.game_starters, db.first_baskets
     started = select(gs.c.game_id).where(gs.c.player_id == player_id)
+    if before:
+        # never count the game being predicted, or anything after it
+        started = started.where(gs.c.game_date < before)
     if season:
         started = started.join(fb, fb.c.game_id == gs.c.game_id).where(
             fb.c.season == season)
@@ -359,14 +366,15 @@ def matchup(request: MatchupRequest):
             ("home", request.home_team.upper(), request.home_starters),
             ("away", request.away_team.upper(), request.away_starters),
         ):
-            starters = given or latest_starters(conn, team)
+            starters = given or latest_starters(
+                conn, team, request.game_date)
             if not given:
                 flags.append(f"{side}_starters_from_last_stored_game")
             if len(starters) != 5:
                 flags.append(f"{side}_has_{len(starters)}_starters")
             for pid in starters:
                 starts, first, name = player_history(
-                    conn, pid, request.season)
+                    conn, pid, request.season, request.game_date)
                 if starts == 0:
                     flags.append(f"no_history_for_{pid}")
                 players.append({
@@ -393,7 +401,8 @@ def matchup(request: MatchupRequest):
     if request.save_prediction:
         saved_id = store_prediction(
             request.game_id, request.game_date, MATCHUP_MODEL,
-            request.tip_time, players)
+            request.tip_time, players,
+            request.home_team.upper(), request.away_team.upper())
 
     return {
         "model": MATCHUP_MODEL,
@@ -425,6 +434,10 @@ class PredictionRequest(BaseModel):
     game_date: str
     model: str = Field(min_length=1, max_length=100)
     tip_time: datetime | None = None
+    home_team: str | None = Field(
+        default=None, min_length=2, max_length=3, pattern=r"^[A-Za-z]+$")
+    away_team: str | None = Field(
+        default=None, min_length=2, max_length=3, pattern=r"^[A-Za-z]+$")
     candidates: list[PredictionCandidate] = Field(
         min_length=1, max_length=30)
 
@@ -443,12 +456,15 @@ class PredictionRequest(BaseModel):
         return self
 
 
-def store_prediction(game_id, game_date, model_name, tip_time, candidates):
+def store_prediction(game_id, game_date, model_name, tip_time, candidates,
+                     home_team=None, away_team=None):
     with engine.begin() as conn:
         set_id = conn.execute(db.prediction_sets.insert().values(
             game_id=game_id,
             game_date=game_date,
             model=model_name,
+            home_team=upper(home_team),
+            away_team=upper(away_team),
             created_at=utc_now(),
             tip_time=tip_time.astimezone(timezone.utc).isoformat()
             if tip_time and tip_time.tzinfo else
@@ -471,7 +487,8 @@ def store_prediction(game_id, game_date, model_name, tip_time, candidates):
 def save_prediction(request: PredictionRequest):
     set_id = store_prediction(
         request.game_id, request.game_date, request.model,
-        request.tip_time, [c.model_dump() for c in request.candidates])
+        request.tip_time, [c.model_dump() for c in request.candidates],
+        request.home_team, request.away_team)
     return {"saved": True, "prediction_id": set_id}
 
 
@@ -485,7 +502,23 @@ def made_before_tip(row):
     return created < tip
 
 
-def load_predictions(conn, model_name=None, limit=None):
+def result_for(conn, s, cache):
+    """The actual first scorer: by game id, else by date and matchup."""
+    if s.actual_player_id:
+        return s.actual_player_id, s.actual_player_name
+    if not (s.home_team and s.away_team):
+        return None, None
+    key = (s.game_date, s.home_team, s.away_team)
+    if key not in cache:
+        fb = db.first_baskets
+        row = conn.execute(select(fb.c.player_id, fb.c.player_name).where(
+            fb.c.game_date == s.game_date, fb.c.home_team == s.home_team,
+            fb.c.away_team == s.away_team)).first()
+        cache[key] = (row.player_id, row.player_name) if row else (None, None)
+    return cache[key]
+
+
+def load_predictions(conn, model_name=None, limit=None, offset=0):
     ps, pi, fb = db.prediction_sets, db.prediction_items, db.first_baskets
     query = (
         select(ps, fb.c.player_id.label("actual_player_id"),
@@ -497,9 +530,13 @@ def load_predictions(conn, model_name=None, limit=None):
         query = query.where(ps.c.model == model_name)
     if limit:
         query = query.limit(limit)
+    if offset:
+        query = query.offset(offset)
     sets = conn.execute(query).fetchall()
     out = []
+    cache = {}
     for s in sets:
+        actual_id, actual_name = result_for(conn, s, cache)
         items = [dict(r._mapping) for r in conn.execute(
             select(pi.c.player_id, pi.c.player_name, pi.c.team,
                    pi.c.probability).where(pi.c.set_id == s.id))]
@@ -508,6 +545,8 @@ def load_predictions(conn, model_name=None, limit=None):
             "game_id": s.game_id,
             "game_date": s.game_date,
             "model": s.model,
+            "home_team": s.home_team,
+            "away_team": s.away_team,
             "created_at": s.created_at,
             "tip_time": s.tip_time,
             "made_before_tip": made_before_tip(s),
@@ -515,12 +554,12 @@ def load_predictions(conn, model_name=None, limit=None):
             "actual": None,
             "grade": None,
         }
-        if s.actual_player_id:
+        if actual_id:
             entry["actual"] = {
-                "player_id": s.actual_player_id,
-                "player_name": s.actual_player_name,
+                "player_id": actual_id,
+                "player_name": actual_name,
             }
-            entry["grade"] = model.grade(items, s.actual_player_id)
+            entry["grade"] = model.grade(items, actual_id)
         out.append(entry)
     return out
 
@@ -531,11 +570,12 @@ def load_predictions(conn, model_name=None, limit=None):
 )
 def list_predictions(
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
     model_name: Annotated[str | None, Query(alias="model")] = None,
 ):
     with engine.connect() as conn:
-        preds = load_predictions(conn, model_name, limit)
-    return {"count": len(preds), "predictions": preds}
+        preds = load_predictions(conn, model_name, limit, offset)
+    return {"count": len(preds), "offset": offset, "predictions": preds}
 
 
 @app.get(
@@ -547,15 +587,7 @@ def prediction_grades(
 ):
     with engine.connect() as conn:
         preds = load_predictions(conn, model_name)
-    # Only predictions known to be made before tip-off count; one per
-    # game and model, the latest such prediction.
-    chosen = {}
-    excluded_late = 0
-    for p in preds:
-        if p["made_before_tip"] is False:
-            excluded_late += 1
-            continue
-        chosen.setdefault((p["game_id"], p["model"]), p)
+    chosen, excluded_late = counted_predictions(preds)
     unknown_timing = sum(
         p["made_before_tip"] is None for p in chosen.values())
     by_model = {}
@@ -570,4 +602,45 @@ def prediction_grades(
         "awaiting_result": ungraded,
         "excluded_made_after_tip": excluded_late,
         "included_without_tip_time": unknown_timing,
+    }
+
+
+def counted_predictions(preds):
+    """Only predictions known to be made before tip-off count; one per game
+    and model, the latest such prediction. preds must be newest first."""
+    chosen = {}
+    excluded_late = 0
+    for p in preds:
+        if p["made_before_tip"] is False:
+            excluded_late += 1
+            continue
+        chosen.setdefault((p["game_id"], p["model"]), p)
+    return chosen, excluded_late
+
+
+@app.get(
+    "/predictions/compare",
+    dependencies=[Depends(require_api_key)]
+)
+def compare_models(
+    model_a: Annotated[str, Query(min_length=1, max_length=100)] = "champion",
+    model_b: Annotated[str, Query(min_length=1, max_length=100)] =
+        MATCHUP_MODEL,
+):
+    """Head-to-head on the games both models predicted before tip-off."""
+    with engine.connect() as conn:
+        preds = [p for p in load_predictions(conn)
+                 if p["model"] in (model_a, model_b)]
+    chosen, _ = counted_predictions(preds)
+    graded = {}
+    for (game_id, m), p in chosen.items():
+        if p["grade"] is not None:
+            graded.setdefault(game_id, {})[m] = p["grade"]
+    pairs = [(g[model_a], g[model_b]) for g in graded.values()
+             if model_a in g and model_b in g]
+    return {
+        "model_a": model_a,
+        "model_b": model_b,
+        "rule": "latest prediction made before tip-off, per game and model",
+        **model.compare(pairs),
     }

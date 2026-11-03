@@ -56,3 +56,42 @@ def summarize(grades):
         "mean_log_loss": round(sum(g["log_loss"] for g in grades) / n, 4),
         "mean_brier": round(sum(g["brier"] for g in grades) / n, 4),
     }
+
+
+def compare(pairs, min_games=30):
+    """Paired comparison of two models' grades on the same games.
+
+    log_loss_diff is model A minus model B (negative means A is better);
+    z uses the paired standard error. The verdict needs min_games games.
+    """
+    n = len(pairs)
+    out = {"shared_games": n}
+    if not n:
+        out["verdict"] = "no games graded for both models yet"
+        return out
+    a = summarize([p[0] for p in pairs])
+    b = summarize([p[1] for p in pairs])
+    diffs = [p[0]["log_loss"] - p[1]["log_loss"] for p in pairs]
+    mean = sum(diffs) / n
+    se = None
+    if n > 1:
+        var = sum((d - mean) ** 2 for d in diffs) / (n - 1)
+        se = math.sqrt(var / n)
+    z = mean / se if se else None
+    out.update({
+        "model_a_summary": a,
+        "model_b_summary": b,
+        "log_loss_diff": round(mean, 4),
+        "log_loss_diff_se": round(se, 4) if se is not None else None,
+        "z": round(z, 2) if z is not None else None,
+        "model_a_better_games": sum(d < 0 for d in diffs),
+    })
+    if n < min_games:
+        out["verdict"] = f"too early: {n} shared games (need {min_games}+)"
+    elif z is not None and z < -1.96:
+        out["verdict"] = "model_a is better (log loss, 95%)"
+    elif z is not None and z > 1.96:
+        out["verdict"] = "model_b is better (log loss, 95%)"
+    else:
+        out["verdict"] = "no clear difference yet"
+    return out
