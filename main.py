@@ -14,6 +14,8 @@ import model
 
 APP_VERSION = "1.2.0"
 API_KEY = os.getenv("NBA_API_KEY", "")
+# Optional second key for apps that only read the board (it cannot write).
+READ_KEY = os.getenv("NBA_READ_KEY", "")
 
 engine = None
 
@@ -57,6 +59,22 @@ def require_api_key(
             status_code=401,
             detail="Invalid or missing API key."
         )
+
+
+def key_matches(given, secret):
+    return bool(secret and given) and hmac.compare_digest(
+        given.encode(), secret.encode())
+
+
+def require_read_key(
+    x_api_key: Annotated[str | None, Header()] = None
+):
+    """The main key, or the read-only NBA_READ_KEY."""
+    if not API_KEY and not READ_KEY:
+        raise HTTPException(503, "Server API key is not configured.")
+    if not (key_matches(x_api_key, API_KEY)
+            or key_matches(x_api_key, READ_KEY)):
+        raise HTTPException(401, "Invalid or missing API key.")
 
 
 def validate_iso_date(value: str) -> str:
@@ -580,7 +598,7 @@ def list_predictions(
 
 @app.get(
     "/predictions/grades",
-    dependencies=[Depends(require_api_key)]
+    dependencies=[Depends(require_read_key)]
 )
 def prediction_grades(
     model_name: Annotated[str | None, Query(alias="model")] = None,
@@ -620,7 +638,7 @@ def counted_predictions(preds):
 
 @app.get(
     "/predictions/compare",
-    dependencies=[Depends(require_api_key)]
+    dependencies=[Depends(require_read_key)]
 )
 def compare_models(
     model_a: Annotated[str, Query(min_length=1, max_length=100)] = "champion",
@@ -643,4 +661,65 @@ def compare_models(
         "model_b": model_b,
         "rule": "latest prediction made before tip-off, per game and model",
         **model.compare(pairs),
+    }
+
+
+def fair_american(p):
+    if not p or p <= 0 or p >= 1:
+        return None
+    return round(-100 * p / (1 - p)) if p >= 0.5 else round(100 * (1 - p) / p)
+
+
+@app.get(
+    "/board",
+    dependencies=[Depends(require_read_key)]
+)
+def board(
+    game_date: Annotated[str | None, Query(alias="date")] = None,
+    champion: Annotated[str, Query(min_length=1, max_length=100)] =
+        "champion",
+):
+    """Tonight's champion picks for an app: per game, the latest pick made
+    before tip-off (or the latest pick if none has a tip time yet), the
+    baseline's pick for comparison, and the result once it is imported."""
+    if game_date:
+        try:
+            validate_iso_date(game_date)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
+    ps = db.prediction_sets
+    with engine.connect() as conn:
+        if not game_date:
+            game_date = conn.execute(select(func.max(ps.c.game_date)).where(
+                ps.c.model == champion)).scalar()
+        if not game_date:
+            return {"date": None, "champion": champion, "games": []}
+        preds = [p for p in load_predictions(conn)
+                 if p["game_date"] == game_date
+                 and p["model"] in (champion, MATCHUP_MODEL)]
+    chosen, _ = counted_predictions(preds)
+    games = {}
+    for (game_id, m), p in chosen.items():
+        g = games.setdefault(game_id, {
+            "game_id": game_id, "home_team": p["home_team"],
+            "away_team": p["away_team"], "tip_time": p["tip_time"],
+            "actual": p["actual"], "champion": None, "baseline": None})
+        g["home_team"] = g["home_team"] or p["home_team"]
+        g["away_team"] = g["away_team"] or p["away_team"]
+        g["actual"] = g["actual"] or p["actual"]
+        picks = sorted(p["candidates"], key=lambda c: c["probability"],
+                       reverse=True)
+        for c in picks:
+            c["fair_odds"] = fair_american(c["probability"])
+        entry = {"model": m, "prediction_id": p["prediction_id"],
+                 "made_at": p["created_at"], "picks": picks,
+                 "grade": p["grade"]}
+        g["champion" if m == champion else "baseline"] = entry
+    out = sorted((g for g in games.values() if g["champion"]),
+                 key=lambda g: (g["tip_time"] or "", g["game_id"]))
+    return {
+        "date": game_date,
+        "champion": champion,
+        "first_basket_rule": "first made field goal",
+        "games": out,
     }
