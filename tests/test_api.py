@@ -329,6 +329,78 @@ def test_old_database_gets_new_columns(tmp_path, monkeypatch):
         assert preds[0]["game_id"] == "G1" and preds[0]["home_team"] is None
 
 
+class FakeResponse:
+    def __init__(self, status, payload=None, content=b"{}"):
+        self.status_code = status
+        self._payload = payload
+        self.content = content
+
+    def json(self):
+        if self._payload is None:
+            raise ValueError("not json")
+        return self._payload
+
+
+def test_relay_allows_only_listed_feeds():
+    import relay
+    calls = []
+
+    def get(url, headers, timeout):
+        calls.append(url)
+        return FakeResponse(200, {"ok": url})
+
+    relay._cache.clear()
+    url = ("https://cdn.nba.com/static/json/liveData/boxscore/"
+           "boxscore_0022600171.json")
+    clock = [0.0]
+    data, cached = relay.fetch(url, now=lambda: clock[0], get=get)
+    assert data == {"ok": url} and cached is False
+    data, cached = relay.fetch(url, now=lambda: clock[0], get=get)
+    assert cached is True and len(calls) == 1
+    clock[0] = 61
+    relay.fetch(url, now=lambda: clock[0], get=get)
+    assert len(calls) == 2
+    for bad in ("https://example.com/x.json",
+                "https://cdn.nba.com/static/json/liveData/boxscore/"
+                "boxscore_0022600171.json?x=1",
+                "https://cdn.nba.com.evil.io/static/json/staticData/"
+                "scheduleLeagueV2.json",
+                "http://cdn.nba.com/static/json/staticData/"
+                "scheduleLeagueV2.json"):
+        with pytest.raises(relay.RelayError) as err:
+            relay.fetch(bad, get=get)
+        assert err.value.status == 400
+    assert len(calls) == 2
+
+
+def test_relay_upstream_errors():
+    import relay
+    relay._cache.clear()
+    url = ("https://stats.nba.com/js/data/leaders/"
+           "00_daily_lineups_20261104.json")
+    for resp, status in ((FakeResponse(403), 502), (FakeResponse(404), 404),
+                         (FakeResponse(200, None), 502)):
+        with pytest.raises(relay.RelayError) as err:
+            relay.fetch(url, get=lambda *a, **k: resp)
+        assert err.value.status == status
+
+
+def test_relay_endpoint(client, monkeypatch):
+    import relay
+    monkeypatch.setattr(relay, "fetch", lambda url: ({"games": []}, False))
+    url = ("https://cdn.nba.com/static/json/staticData/"
+           "scheduleLeagueV2.json")
+    assert client.get("/nba/feed", params={"url": url}).status_code == 401
+    r = client.get("/nba/feed", params={"url": url}, headers=H)
+    assert r.status_code == 200 and r.json()["data"] == {"games": []}
+
+    def refuse(url):
+        raise relay.RelayError(400, "no")
+    monkeypatch.setattr(relay, "fetch", refuse)
+    assert client.get("/nba/feed", params={"url": url},
+                      headers=H).status_code == 400
+
+
 def test_board_for_app(client, monkeypatch):
     import main
     monkeypatch.setattr(main, "READ_KEY", "read-only")

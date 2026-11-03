@@ -101,6 +101,7 @@ Without `NBA_API_KEY`, protected endpoints return 503.
 | GET    | `/predictions`                | yes  | List predictions with their grades    |
 | GET    | `/predictions/grades`         | yes  | Hit rate, log loss and Brier score per model |
 | GET    | `/predictions/compare`        | yes  | Head-to-head of two models on the games both predicted (`model_a`, `model_b`) |
+| GET    | `/nba/feed?url=`              | yes  | Relay of a fixed set of NBA.com JSON feeds |
 | GET    | `/board`                      | read | Tonight's champion picks per game for an app (`date`, default latest) |
 
 ### Matchup model
@@ -146,6 +147,21 @@ curl -X POST http://127.0.0.1:8000/first-basket/probabilities \
         {"player_id":"P001","player_name":"Example Player A","first_basket_count":12,"eligible_game_count":60},
         {"player_id":"P002","player_name":"Example Player B","first_basket_count":8,"eligible_game_count":40}]}'
 ```
+
+### NBA.com relay
+
+Callers that cannot reach NBA.com (the model's cloud runs) can fetch a feed
+through `GET /nba/feed?url=<full NBA.com URL>`. Only these are relayed, and
+the JSON comes back unchanged under `data`:
+
+- `cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json` (cached 1 min)
+- `cdn.nba.com/static/json/staticData/scheduleLeagueV2.json` (30 min)
+- `cdn.nba.com/static/json/liveData/boxscore/boxscore_<game id>.json` (1 min)
+- `cdn.nba.com/static/json/liveData/playbyplay/playbyplay_<game id>.json` (1 min)
+- `stats.nba.com/js/data/leaders/00_daily_lineups_<YYYYMMDD>.json` (2 min)
+
+Anything else gets 400. If NBA.com refuses Render's servers, the relay
+answers 502 and callers fall back to their other sources.
 
 ### Board for an app
 
