@@ -236,6 +236,99 @@ def test_unset_key_returns_503(tmp_path, monkeypatch):
                      headers=H).status_code == 503
 
 
+def test_grading_by_date_and_teams_without_game_id(client):
+    tip = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+    r = client.post("/predictions", headers=H, json={
+        "game_id": "2025-11-01:NYK@BOS", "game_date": "2025-11-01",
+        "model": "champion", "tip_time": tip,
+        "home_team": "bos", "away_team": "NYK",
+        "candidates": [
+            {"player_id": "B1", "player_name": "x", "team": "BOS",
+             "probability": 0.6},
+            {"player_id": "N1", "player_name": "y", "team": "NYK",
+             "probability": 0.4}]})
+    assert r.status_code == 200, r.text
+    # The importer stores the game under its NBA id, not ours.
+    save_game(client, "0022500123", "2025-11-01", "B1", "BOS", "BOS", "NYK",
+              BOS, NYK)
+    pred = client.get("/predictions", headers=H).json()["predictions"][0]
+    assert pred["home_team"] == "BOS" and pred["away_team"] == "NYK"
+    assert pred["actual"]["player_id"] == "B1"
+    assert pred["grade"]["top_pick_hit"] is True
+
+
+def test_matchup_ignores_the_game_it_predicts(client):
+    save_game(client, "G1", "2025-10-22", "B1", "BOS", "BOS", "NYK",
+              BOS, NYK)
+    save_game(client, "G2", "2025-10-24", "B2", "BOS", "BOS", "NYK",
+              BOS, NYK)
+    r = client.post("/first-basket/matchup", headers=H, json={
+        "home_team": "BOS", "away_team": "NYK", "prior_games": 2,
+        "save_prediction": True, "game_id": "G2",
+        "game_date": "2025-10-24"})
+    by_id = {p["player_id"]: p for p in r.json()["results"]}
+    assert by_id["B1"]["starts"] == 1 and by_id["B1"]["first_baskets"] == 1
+    assert by_id["B2"]["first_baskets"] == 0
+
+
+def test_compare_endpoint(client):
+    tip = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+    for i, scorer in enumerate(["B1", "B1", "N1"]):
+        gid, date = f"C{i}", f"2025-11-0{i + 1}"
+        for m, p_b1 in (("champion", 0.5), ("baseline", 0.2)):
+            r = client.post("/predictions", headers=H, json={
+                "game_id": gid, "game_date": date, "model": m,
+                "tip_time": tip, "candidates": [
+                    {"player_id": "B1", "player_name": "x", "team": "BOS",
+                     "probability": p_b1},
+                    {"player_id": "N1", "player_name": "y", "team": "NYK",
+                     "probability": 0.2}]})
+            assert r.status_code == 200
+        save_game(client, gid, date, scorer, "BOS", "BOS", "NYK", BOS, NYK)
+    # A game only one model predicted is left out of the head-to-head.
+    client.post("/predictions", headers=H, json={
+        "game_id": "C9", "game_date": "2025-11-09", "model": "champion",
+        "tip_time": tip, "candidates": [
+            {"player_id": "B1", "player_name": "x", "team": "BOS",
+             "probability": 0.5}]})
+    save_game(client, "C9", "2025-11-09", "B1", "BOS", "BOS", "NYK",
+              BOS, NYK)
+    body = client.get("/predictions/compare?model_a=champion"
+                      "&model_b=baseline", headers=H).json()
+    assert body["shared_games"] == 3
+    assert body["model_a_better_games"] == 2
+    assert body["log_loss_diff"] < 0
+    assert body["verdict"].startswith("too early")
+    empty = client.get("/predictions/compare?model_a=x&model_b=y",
+                       headers=H).json()
+    assert empty["shared_games"] == 0
+
+
+def test_old_database_gets_new_columns(tmp_path, monkeypatch):
+    import sqlite3
+    path = tmp_path / "old.db"
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE prediction_sets (id INTEGER PRIMARY KEY, "
+                "game_id VARCHAR(32) NOT NULL, game_date VARCHAR(10) NOT NULL,"
+                " model VARCHAR(100) NOT NULL, created_at VARCHAR(40) NOT NULL,"
+                " tip_time VARCHAR(40))")
+    con.execute("INSERT INTO prediction_sets VALUES "
+                "(1, 'G1', '2025-11-01', 'm', '2025-11-01T00:00:00', NULL)")
+    con.commit()
+    con.close()
+    monkeypatch.setenv("NBA_API_KEY", KEY)
+    monkeypatch.setenv("DB_PATH", str(path))
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    import db
+    monkeypatch.setattr(db, "FIRST_BASKETS_CSV", tmp_path / "fb.csv")
+    monkeypatch.setattr(db, "STARTERS_CSV", tmp_path / "st.csv")
+    import main
+    importlib.reload(main)
+    with TestClient(main.app) as c:
+        preds = c.get("/predictions", headers=H).json()["predictions"]
+        assert preds[0]["game_id"] == "G1" and preds[0]["home_team"] is None
+
+
 class FakeResponse:
     def __init__(self, status, payload=None, content=b"{}"):
         self.status_code = status
