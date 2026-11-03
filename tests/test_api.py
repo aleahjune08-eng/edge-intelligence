@@ -399,3 +399,50 @@ def test_relay_endpoint(client, monkeypatch):
     monkeypatch.setattr(relay, "fetch", refuse)
     assert client.get("/nba/feed", params={"url": url},
                       headers=H).status_code == 400
+
+
+def test_board_for_app(client, monkeypatch):
+    import main
+    monkeypatch.setattr(main, "READ_KEY", "read-only")
+    R = {"X-API-Key": "read-only"}
+    tip = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+    save_game(client, "G0", "2025-10-20", "B1", "BOS", "BOS", "NYK",
+              BOS, NYK)
+    for p_b1 in (0.3, 0.6):          # the later pre-tip pick wins
+        client.post("/predictions", headers=H, json={
+            "game_id": "2025-11-01:NYK@BOS", "game_date": "2025-11-01",
+            "model": "champion", "tip_time": tip,
+            "home_team": "BOS", "away_team": "NYK", "candidates": [
+                {"player_id": "N1", "player_name": "y", "team": "NYK",
+                 "probability": 0.2},
+                {"player_id": "B1", "player_name": "x", "team": "BOS",
+                 "probability": p_b1}]})
+    client.post("/first-basket/matchup", headers=H, json={
+        "home_team": "BOS", "away_team": "NYK", "save_prediction": True,
+        "game_id": "2025-11-01:NYK@BOS", "game_date": "2025-11-01",
+        "tip_time": tip})
+    body = client.get("/board", headers=R).json()
+    assert body["date"] == "2025-11-01" and len(body["games"]) == 1
+    g = body["games"][0]
+    assert g["home_team"] == "BOS"
+    top = g["champion"]["picks"][0]
+    assert top["player_id"] == "B1" and top["probability"] == 0.6
+    assert top["fair_odds"] == -150
+    assert g["baseline"]["model"] == "starter_history_rate_v1"
+    assert g["actual"] is None
+    save_game(client, "0022500123", "2025-11-01", "B1", "BOS", "BOS", "NYK",
+              BOS, NYK)
+    g = client.get("/board?date=2025-11-01", headers=R).json()["games"][0]
+    assert g["actual"]["player_id"] == "B1"
+    assert g["champion"]["grade"]["top_pick_hit"] is True
+    # The read-only key reads but cannot write.
+    assert client.get("/predictions/compare", headers=R).status_code == 200
+    assert client.post("/predictions", headers=R, json={
+        "game_id": "x", "game_date": "2025-11-02", "model": "m",
+        "candidates": [{"player_id": "A", "player_name": "A",
+                        "team": "BOS", "probability": 0.1}]}
+    ).status_code == 401
+    assert client.get("/board", headers={"X-API-Key": "no"}).status_code == 401
+    assert client.get("/board?date=11-01-2025", headers=R).status_code == 422
+    empty = client.get("/board?date=2025-12-25", headers=R).json()
+    assert empty["games"] == []
