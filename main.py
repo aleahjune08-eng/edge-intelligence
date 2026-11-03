@@ -5,12 +5,14 @@ from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import FastAPI, Depends, Header, HTTPException, Query
+from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import SQLAlchemyError
 
 import db
 import model
+import relay
 
 APP_VERSION = "1.1.0"
 API_KEY = os.getenv("NBA_API_KEY", "")
@@ -35,6 +37,7 @@ app = FastAPI(
     description="Private NBA data and first-basket research API.",
     lifespan=lifespan,
 )
+app.add_middleware(GZipMiddleware, minimum_size=2000)
 
 
 def utc_now():
@@ -571,3 +574,22 @@ def prediction_grades(
         "excluded_made_after_tip": excluded_late,
         "included_without_tip_time": unknown_timing,
     }
+
+
+# ---------------------------------------------------------------------------
+# NBA.com relay
+# ---------------------------------------------------------------------------
+
+@app.get(
+    "/nba/feed",
+    dependencies=[Depends(require_api_key)]
+)
+def nba_feed(url: Annotated[str, Query(min_length=10, max_length=300)]):
+    """Fetch one of a fixed set of NBA.com JSON feeds (schedule, today's
+    scoreboard, daily lineups, live box score, play-by-play) for callers
+    that cannot reach NBA.com. The JSON comes back unchanged."""
+    try:
+        data, cached = relay.fetch(url)
+    except relay.RelayError as exc:
+        raise HTTPException(exc.status, exc.detail)
+    return {"url": url, "cached": cached, "data": data}
