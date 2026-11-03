@@ -49,6 +49,10 @@ prediction_sets = Table(
     Column("model", String(100), nullable=False),
     Column("created_at", String(40), nullable=False),
     Column("tip_time", String(40)),
+    # Teams let a prediction be graded by date and matchup when the caller
+    # had no NBA game id (for example when cdn.nba.com is unreachable).
+    Column("home_team", String(3)),
+    Column("away_team", String(3)),
 )
 
 prediction_items = Table(
@@ -115,6 +119,23 @@ def read_csv(path):
             {k: (v if v != "" else None) for k, v in row.items()}
             for row in csv.DictReader(f)
         ]
+
+
+def add_missing_columns(engine):
+    """create_all() never alters an existing table: add new nullable columns."""
+    from sqlalchemy import inspect, text
+    insp = inspect(engine)
+    with engine.begin() as conn:
+        for table in metadata.sorted_tables:
+            if not insp.has_table(table.name):
+                continue
+            have = {c["name"] for c in insp.get_columns(table.name)}
+            for col in table.columns:
+                if col.name in have or not col.nullable:
+                    continue
+                ctype = col.type.compile(dialect=engine.dialect)
+                conn.execute(text(
+                    f'ALTER TABLE {table.name} ADD COLUMN {col.name} {ctype}'))
 
 
 def seed_from_csv(conn):
