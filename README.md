@@ -45,6 +45,14 @@ python scripts/ledger/from_csv.py cfb_export.csv --dry-run
 
 To send, set `EDGE_LEDGER_URL` and `NBA_API_KEY` in the environment.
 
+## Edge Intelligence phone app
+
+`app/` is the Stage 3 iPhone-first app (a PWA, no build step). The API serves
+it at `/app`, so after a deploy open `https://<your-api>/app` on the phone,
+enter the read-only key under Account, and use Share > Add to Home Screen.
+It only calls the read endpoints. To host it elsewhere (e.g. Cloudflare
+Pages), set `EDGE_APP_ORIGINS` to that site's origin so the API allows it.
+
 ## Run locally
 
 Requires Python 3.10 or newer (tested on 3.13).

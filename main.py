@@ -5,7 +5,10 @@ from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import FastAPI, Depends, Header, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import SQLAlchemyError
@@ -43,6 +46,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.add_middleware(GZipMiddleware, minimum_size=2000)
+# Optional: origins of a separately hosted app (e.g. Cloudflare Pages),
+# comma-separated. The app served at /app below is same-origin and needs none.
+APP_ORIGINS = [o.strip() for o in os.getenv("EDGE_APP_ORIGINS", "").split(",")
+               if o.strip()]
+if APP_ORIGINS:
+    app.add_middleware(CORSMiddleware, allow_origins=APP_ORIGINS,
+                       allow_methods=["GET"], allow_headers=["X-API-Key"])
 ledger_api.get_engine = lambda: engine
 
 
@@ -758,3 +768,12 @@ app.include_router(ledger_api.write_router,
                    dependencies=[Depends(require_api_key)])
 app.include_router(ledger_api.read_router,
                    dependencies=[Depends(require_read_key)])
+
+
+# ---------------------------------------------------------------------------
+# Edge Intelligence phone app (static files; it reads the endpoints above)
+# ---------------------------------------------------------------------------
+
+APP_DIR = Path(__file__).parent / "app"
+if APP_DIR.is_dir():
+    app.mount("/app", StaticFiles(directory=APP_DIR, html=True), name="app")
