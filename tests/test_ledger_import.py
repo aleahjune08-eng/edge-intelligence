@@ -9,7 +9,7 @@ import common as C  # noqa: E402
 import from_csv  # noqa: E402
 import from_nba_v7  # noqa: E402
 import from_nfl_paper  # noqa: E402
-from test_ledger import RH, client  # noqa: E402,F401
+from test_ledger import RH, client  # noqa: E402,F401,F811
 from test_api import KEY  # noqa: E402
 
 TIP = "2026-11-07T00:10:00Z"

@@ -9,6 +9,7 @@ from typing import Annotated, Callable, Literal
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import and_, select
+from sqlalchemy.exc import IntegrityError
 
 import ledger_db as L
 import ledger_metrics as LM
@@ -239,8 +240,14 @@ def add_entries(batch: EntryBatch):
                     raise HTTPException(
                         422, f"{e.entry_key}: linked_entry_key not found")
                 row["linked_entry_id"] = getattr(link, "id", link)
-            new_id = conn.execute(L.ledger_entries.insert().values(
-                **row)).inserted_primary_key[0]
+            try:
+                new_id = conn.execute(L.ledger_entries.insert().values(
+                    **row)).inserted_primary_key[0]
+            except IntegrityError:
+                # another request stored the same key a moment earlier
+                raise HTTPException(409, f"{row['entry_key']} was stored "
+                                         "by another request; resend to "
+                                         "check it")
             new_ids[row["entry_key"]] = new_id
     return {"created": len(created), "duplicates": len(duplicates),
             "duplicate_keys": duplicates[:50]}
@@ -478,7 +485,8 @@ def board(event_date: Annotated[str | None, Query(
         })
     items.sort(key=lambda i: (i["status"] != "live",
                               i["decision"] != "BET",
-                              -(i["expected_value"] or -9)))
+                              i["expected_value"] is None,
+                              -(i["expected_value"] or 0)))
     return {
         "date": day,
         "generated_at": now.isoformat(),

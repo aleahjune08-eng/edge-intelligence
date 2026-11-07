@@ -394,3 +394,19 @@ def test_board(client):
     assert b["counts"] == {"live": 2, "started": 0,
                            "made after the start": 0,
                            "start time not verified": 1}
+
+
+def test_board_orders_zero_ev_above_missing_ev(client):
+    future = datetime.now(timezone.utc) + timedelta(hours=3)
+    day, now = future.date().isoformat(), datetime.now(timezone.utc)
+    common = dict(event_date=day, event_start_utc=future.isoformat(),
+                  predicted_at=now.isoformat())
+    add(client,
+        entry("noprice", selection="A", **common),
+        # p = 0.1 at +900 is exactly zero EV
+        entry("zero", selection="B", model_prob=0.1, odds_american=900,
+              book="DraftKings", **common),
+        entry("neg", selection="C", model_prob=0.05, odds_american=900,
+              book="DraftKings", **common))
+    b = client.get("/ledger/board", headers=RH, params={"date": day}).json()
+    assert [i["entry_key"] for i in b["items"]] == ["zero", "neg", "noprice"]
