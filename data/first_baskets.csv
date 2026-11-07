@@ -122,3 +122,12 @@ game_id,game_date,player_id,player_name,team,source,verified,recorded_at,season,
 0022600186,2026-11-04,1628389,Bam Adebayo,MIA,cdn.nba.com liveData playbyplay + boxscore,0,2026-11-05T12:47:12.516748+00:00,2026-27,LAC,MIA,MIA,free_throw_scored_before_first_fg
 0022600187,2026-11-05,1626164,Devin Booker,PHX,cdn.nba.com liveData playbyplay + boxscore,0,2026-11-06T12:44:50.091511+00:00,2026-27,PHX,ORL,ORL,free_throw_scored_before_first_fg
 0022600188,2026-11-05,203952,Andrew Wiggins,MIA,cdn.nba.com liveData playbyplay + boxscore,0,2026-11-06T12:44:51.514845+00:00,2026-27,GSW,MIA,MIA,
+0022600025,2026-11-06,1629638,Nickeil Alexander-Walker,ATL,cdn.nba.com liveData playbyplay + boxscore,0,2026-11-07T12:28:48.340734+00:00,2026-27,ATL,WAS,WAS,
+0022600026,2026-11-06,1628369,Jayson Tatum,BOS,cdn.nba.com liveData playbyplay + boxscore,0,2026-11-07T12:28:49.515323+00:00,2026-27,CHA,BOS,CHA,
+0022600027,2026-11-06,1642845,VJ Edgecombe,PHI,cdn.nba.com liveData playbyplay + boxscore,0,2026-11-07T12:28:50.676478+00:00,2026-27,CLE,PHI,CLE,
+0022600028,2026-11-06,1628374,Lauri Markkanen,UTA,cdn.nba.com liveData playbyplay + boxscore,0,2026-11-07T12:28:51.837190+00:00,2026-27,DAL,UTA,DAL,
+0022600029,2026-11-06,1642272,Jared McCain,OKC,cdn.nba.com liveData playbyplay + boxscore,0,2026-11-07T12:28:53.023678+00:00,2026-27,MEM,OKC,MEM,
+0022600030,2026-11-06,1631170,Jaime Jaquez Jr.,MIL,cdn.nba.com liveData playbyplay + boxscore,0,2026-11-07T12:28:54.226526+00:00,2026-27,MIL,TOR,TOR,
+0022600031,2026-11-06,1631255,Karlo Matković,NOP,cdn.nba.com liveData playbyplay + boxscore,0,2026-11-07T12:28:55.375280+00:00,2026-27,NOP,MIN,NOP,
+0022600032,2026-11-06,1629029,Luka Dončić,LAL,cdn.nba.com liveData playbyplay + boxscore,0,2026-11-07T12:28:56.467996+00:00,2026-27,LAL,POR,LAL,
+0022600033,2026-11-06,1628368,De'Aaron Fox,SAS,cdn.nba.com liveData playbyplay + boxscore,0,2026-11-07T12:28:57.626940+00:00,2026-27,SAC,SAS,SAS,
